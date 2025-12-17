@@ -58,11 +58,6 @@ export const documentsAPI = {
     return response.data;
   },
   
-  delete: async (filename: string) => {
-    const response = await api.delete(`/api/documents/${filename}`);
-    return response.data;
-  },
-  
   stats: async () => {
     const response = await api.get('/api/documents/stats');
     return response.data;

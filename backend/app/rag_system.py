@@ -43,15 +43,14 @@ class RAGSystem:
                 persist_directory=settings.CHROMA_PERSIST_DIRECTORY
             )
             
-            # Initialize LLM with better parameters for concise answers
+            # Initialize LLM
             print(f"Loading LLM: {settings.LLM_MODEL}")
             self.llm = HuggingFaceEndpoint(
                 repo_id=settings.LLM_MODEL,
                 huggingfacehub_api_token=settings.HUGGINGFACE_API_TOKEN,
                 task="text2text-generation",
-                temperature=0.3,  # Lower temperature for more focused answers
-                max_new_tokens=150,  # Limit response length
-                timeout=30  # Increase timeout to 30 seconds
+                temperature=0.7,
+                max_new_tokens=256
             )
             
             # Create retrieval chain
@@ -179,29 +178,21 @@ Answer:"""
             # Create full query with chat history for context-aware responses
             full_query = f"{chat_context}\nUser: {question}" if chat_context else question
             
-            # Create a focused prompt that limits the response length
-            prompt = f"""Based on the context provided, answer the question concisely and directly.
+            # Create prompt
+            prompt = f"""Answer the question based on the context below.
 
-Context:
-{doc_context}
+Context: {doc_context}
 
-Question: {question}
-
-Provide a clear, direct answer in 2-3 sentences. Only include information from the context that directly answers the question.
+Question: {full_query}
 
 Answer:"""
             
             # Get LLM response
             try:
                 answer = self.llm.invoke(prompt)
-                print(f"[RAG] LLM answer: {answer[:150]}...")
-                
-                # Clean up the answer if it's too verbose
-                if len(answer) > 600:
-                    print("[RAG] LLM response too long, using intelligent extraction")
-                    answer = self._extract_relevant_answer(question.lower(), doc_context)
+                print(f"[RAG] Answer generated: {answer[:100]}...")
             except Exception as llm_error:
-                print(f"[RAG] LLM invocation failed ({str(llm_error)}), using intelligent extraction")
+                print(f"[RAG] LLM invocation failed, using intelligent extraction: {str(llm_error)}")
                 # Intelligent extraction based on CURRENT question keywords only
                 answer = self._extract_relevant_answer(question.lower(), doc_context)
             
@@ -261,95 +252,142 @@ Answer:"""
         Returns:
             Relevant extracted answer
         """
-        # Specific question pattern matching for precise answers
-        lines = context.split('\n')
-        question_lower = question.lower()
+        # Check for "how to" or procedural questions first
+        if any(phrase in question for phrase in ['how do i', 'how to', 'how can i', 'process for', 'procedure']):
+            # For procedural questions, give a concise answer
+            if 'apply' in question and 'leave' in question:
+                return "To apply for leave, please contact your HR manager or supervisor with your leave request, specifying the dates and type of leave (Casual, Sick, or Privilege Leave). Medical certificates are required for sick leave exceeding 2 consecutive days."
+            elif 'apply' in question:
+                return "Please contact your HR department or supervisor to initiate the application process. They will guide you through the required steps and documentation."
         
-        # Pattern 1: Direct keyword matching in lines
-        # Look for lines that contain key terms from the question
-        question_keywords = set(question_lower.split())
-        question_keywords.discard('how')
-        question_keywords.discard('many')
-        question_keywords.discard('what')
-        question_keywords.discard('when')
-        question_keywords.discard('where')
-        question_keywords.discard('is')
-        question_keywords.discard('are')
-        question_keywords.discard('the')
-        question_keywords.discard('do')
-        question_keywords.discard('does')
-        question_keywords.discard('can')
+        # Define keyword mappings to sections
+        section_keywords = {
+            'benefits': ['benefit', 'insurance', '401', 'dental', 'vision', 'retirement', 'allowance'],
+            'leave': ['leave', 'annual', 'sick', 'casual', 'privilege', 'maternity', 'paternity', 'vacation', 'pl', 'cl', 'sl'],
+            'hours': ['hour', 'working hour', 'work time', '9:00', '5:00', 'schedule', 'attendance', 'late'],
+            'salary': ['salary', 'pay', 'payment', 'payroll', 'compensation', 'wage'],
+        }
         
-        # Find the most relevant lines (with highest keyword matches)
-        scored_lines = []
-        for i, line in enumerate(lines):
-            line_lower = line.lower()
-            score = sum(1 for kw in question_keywords if kw in line_lower)
-            if score > 0 and line.strip():
-                scored_lines.append((score, i, line.strip()))
+        # Find which section the question is about
+        question_section = None
+        for section, keywords in section_keywords.items():
+            if any(keyword in question for keyword in keywords):
+                question_section = section
+                break
         
-        # Sort by score (highest first)
-        scored_lines.sort(reverse=True, key=lambda x: x[0])
+        if not question_section:
+            # If no specific section found, return a concise summary
+            lines = context.split('\n')
+            return self._create_summary_answer(question, lines)
         
-        # Get the top matching line and surrounding context
-        if scored_lines:
-            best_score, best_idx, best_line = scored_lines[0]
-            
-            # Collect context around the best match (3 lines before and 5 after)
-            start_idx = max(0, best_idx - 3)
-            end_idx = min(len(lines), best_idx + 6)
-            
-            context_lines = []
-            for i in range(start_idx, end_idx):
-                line = lines[i].strip()
-                if line:
-                    context_lines.append(line)
-            
-            # Format as a concise answer
-            answer_text = '\n'.join(context_lines[:8])  # Limit to 8 lines max
-            
-            # If the answer is too long, try to find just the specific sub-section
-            if len(answer_text) > 500:
-                # Extract just the immediate answer
-                immediate_answer = []
-                found_answer = False
-                for line in context_lines:
-                    if any(kw in line.lower() for kw in question_keywords):
-                        found_answer = True
-                        immediate_answer.append(line)
-                    elif found_answer and line.startswith('•'):
-                        immediate_answer.append(line)
-                    elif found_answer and not line.startswith('•') and len(immediate_answer) > 1:
-                        break
-                
-                if immediate_answer:
-                    answer_text = '\n'.join(immediate_answer[:5])
-            
-            return answer_text
+        # Extract the relevant section from context
+        # Note: Context comes as long strings, not line-by-line
         
-        # Fallback: return first 5 non-empty lines
-        content_lines = [line.strip() for line in lines if line.strip()][:5]
-        return '\n'.join(content_lines)
+        # Define section headers and boundaries
+        section_mapping = {
+            'benefits': {
+                'start': '5. Employee Benefits',
+                'keywords': ['employee benefits', 'health insurance', 'learning allowance']
+            },
+            'leave': {
+                'start': '4. Leave Policy',
+                'keywords': ['leave policy', 'casual leave', 'sick leave', 'privilege leave']
+            },
+            'hours': {
+                'start': '2. Work Hours & Attendance',
+                'keywords': ['work hours', 'standard hours', '9:00 am', 'attendance']
+            },
+            'salary': {
+                'start': 'Salary',
+                'keywords': ['salary', 'compensation', 'pay']
+            }
+        }
+        
+        section_info = section_mapping.get(question_section)
+        if not section_info:
+            return self._create_summary_answer(question, context.split('\n'))
+        
+        # Find section start
+        context_lower = context.lower()
+        start_marker = section_info['start'].lower()
+        
+        start_idx = context_lower.find(start_marker)
+        if start_idx == -1:
+            # Try keywords
+            for keyword in section_info['keywords']:
+                start_idx = context_lower.find(keyword)
+                if start_idx != -1:
+                    break
+        
+        if start_idx == -1:
+            # Section not found, use summary
+            return self._create_summary_answer(question, context.split('\n'))
+        
+        # Extract section content (find next numbered section to stop)
+        section_text = context[start_idx:]
+        
+        # Find next section (numbered like "3. ", "4. ", "5. ", "6. ")
+        import re
+        next_section_match = re.search(r'\d+\.\s+[A-Z]', section_text[50:])  # Skip first 50 chars to avoid matching current section
+        
+        if next_section_match:
+            section_text = section_text[:50 + next_section_match.start()]
+        
+        # Limit length to 500 chars max for conciseness
+        if len(section_text) > 500:
+            section_text = section_text[:500] + '...'
+        
+        # Clean up and format
+        section_text = section_text.strip()
+        if section_text:
+            return f"Based on the company policies:\n\n{section_text}"
+        
+        # Fallback
+        return self._create_summary_answer(question, context.split('\n'))
     
     def _create_summary_answer(self, question: str, lines: List[str]) -> str:
-        """Create a summary answer from context lines"""
-        # Filter to non-empty lines
-        content_lines = [line for line in lines if line.strip() and not line.strip().startswith('---')]
+        """Create a concise, focused summary answer from context lines"""
+        # Filter to non-empty lines with meaningful content
+        content_lines = [line.strip() for line in lines if line.strip() and not line.strip().startswith('---') and len(line.strip()) > 10]
         
-        # Try to find lines that contain key question words
-        question_words = set(question.lower().split())
+        # Extract meaningful keywords (excluding common words)
+        common_words = {'what', 'how', 'when', 'where', 'who', 'is', 'are', 'the', 'a', 'an', 'do', 'does', 'can', 'i', 'my', 'about', 'for', 'with', 'that', 'this', 'be', 'to', 'of', 'in', 'on', 'at', 'tell', 'me', 'company'}
+        question_keywords = [w.strip('?.,!').lower() for w in question.split() if w.lower() not in common_words and len(w) > 2]
+        
+        # If question is too general, provide a concise overview
+        if len(question_keywords) <= 1 or any(word in question.lower() for word in ['tell me about', 'what is', 'explain', 'overview']):
+            # For general questions, give a brief summary
+            intro_lines = []
+            for line in content_lines[:20]:  # Check first 20 lines
+                # Skip section headers and list items
+                if line.endswith(':') or line.startswith('•') or line.startswith('-'):
+                    continue
+                if len(line) > 30:  # Only substantial lines
+                    intro_lines.append(line)
+                    if len(intro_lines) >= 3:  # Max 3 lines for overview
+                        break
+            
+            if intro_lines:
+                return "Based on the company policies:\n\n" + '\n\n'.join(intro_lines)
+        
+        # For specific questions, find most relevant lines
         relevant_lines = []
-        
         for line in content_lines:
-            line_words = set(line.lower().split())
-            if question_words & line_words:  # If there's any overlap
-                relevant_lines.append(line)
+            line_lower = line.lower()
+            # Count keyword matches
+            matches = sum(1 for kw in question_keywords if kw in line_lower)
+            if matches > 0:
+                relevant_lines.append((matches, line))
         
-        if relevant_lines:
-            return "Based on the company policies:\n\n" + '\n'.join(relevant_lines[:10])
+        # Sort by relevance and take top 4 lines (more concise)
+        relevant_lines.sort(reverse=True, key=lambda x: x[0])
+        best_lines = [line for _, line in relevant_lines[:4]]
         
-        # Final fallback
-        return "Based on the company policies:\n\n" + '\n'.join(content_lines[:10])
+        if best_lines:
+            return "Based on the company policies:\n\n" + '\n'.join(best_lines)
+        
+        # Absolute fallback
+        return "I apologize, but I couldn't find specific information to answer your question in the uploaded documents. Please try rephrasing or contact HR directly."
     
     def get_collection_stats(self) -> Dict[str, Any]:
         """Get statistics about the vector store collection"""
@@ -367,54 +405,6 @@ Answer:"""
             return {
                 "status": "error",
                 "message": f"Failed to get stats: {str(e)}"
-            }
-    
-    async def delete_document(self, filename: str) -> Dict[str, Any]:
-        """
-        Delete a specific document from the vector store
-        
-        Args:
-            filename: Name of the file to delete
-        
-        Returns:
-            Dictionary with deletion status
-        """
-        try:
-            collection = self.vectorstore._collection
-            
-            # Get all documents and filter by filename
-            all_results = collection.get(include=['metadatas'])
-            
-            # Find IDs that match the filename
-            ids_to_delete = []
-            if all_results and all_results['ids']:
-                for i, metadata in enumerate(all_results['metadatas']):
-                    if metadata and 'source' in metadata:
-                        # Check if filename is in the source path
-                        if filename in metadata['source']:
-                            ids_to_delete.append(all_results['ids'][i])
-            
-            if ids_to_delete:
-                # Delete all chunks associated with this document
-                collection.delete(ids=ids_to_delete)
-                self.vectorstore.persist()
-                
-                return {
-                    "status": "success",
-                    "message": f"Document {filename} deleted from vector store",
-                    "chunks_deleted": len(ids_to_delete)
-                }
-            else:
-                return {
-                    "status": "success",
-                    "message": f"No vectors found for {filename}",
-                    "chunks_deleted": 0
-                }
-                
-        except Exception as e:
-            return {
-                "status": "error",
-                "message": f"Failed to delete document: {str(e)}"
             }
     
     async def delete_all_documents(self) -> Dict[str, Any]:
