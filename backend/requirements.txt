@@ -1,0 +1,29 @@
+# FastAPI
+fastapi
+uvicorn[standard]
+python-multipart
+python-jose[cryptography]
+passlib[bcrypt]
+python-dotenv
+
+# LangChain
+langchain
+langchain-community
+langchain-huggingface
+
+# Vector Store
+chromadb
+
+# Hugging Face
+transformers
+sentence-transformers
+torch
+huggingface-hub
+
+# PDF Processing
+pypdf
+pypdfium2
+
+# Utilities
+pydantic>=2.0
+pydantic-settings
