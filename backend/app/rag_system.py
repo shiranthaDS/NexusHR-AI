@@ -367,18 +367,27 @@ Answer:"""
         try:
             collection = self.vectorstore._collection
             
-            # Get all documents with this filename in metadata
-            results = collection.get(where={"source": {"$regex": f".*{filename}$"}})
+            # Get all documents and filter by filename
+            all_results = collection.get(include=['metadatas'])
             
-            if results and results['ids']:
+            # Find IDs that match the filename
+            ids_to_delete = []
+            if all_results and all_results['ids']:
+                for i, metadata in enumerate(all_results['metadatas']):
+                    if metadata and 'source' in metadata:
+                        # Check if filename is in the source path
+                        if filename in metadata['source']:
+                            ids_to_delete.append(all_results['ids'][i])
+            
+            if ids_to_delete:
                 # Delete all chunks associated with this document
-                collection.delete(ids=results['ids'])
+                collection.delete(ids=ids_to_delete)
                 self.vectorstore.persist()
                 
                 return {
                     "status": "success",
                     "message": f"Document {filename} deleted from vector store",
-                    "chunks_deleted": len(results['ids'])
+                    "chunks_deleted": len(ids_to_delete)
                 }
             else:
                 return {
