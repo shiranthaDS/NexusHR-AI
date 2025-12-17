@@ -192,9 +192,9 @@ Answer:"""
                 answer = self.llm.invoke(prompt)
                 print(f"[RAG] Answer generated: {answer[:100]}...")
             except Exception as llm_error:
-                print(f"[RAG] LLM invocation failed, using fallback: {str(llm_error)}")
-                # Fallback to context-based answer
-                answer = f"Based on the company policies: {context[:500]}..."
+                print(f"[RAG] LLM invocation failed, using intelligent extraction: {str(llm_error)}")
+                # Intelligent extraction based on question keywords
+                answer = self._extract_relevant_answer(full_query.lower(), context)
             
             # Extract source documents
             sources = []
@@ -240,6 +240,101 @@ Answer:"""
         policy_count = sum(1 for kw in policy_keywords if kw in question_lower)
         
         return "personal_data" if personal_count > policy_count else "policy"
+    
+    def _extract_relevant_answer(self, question: str, context: str) -> str:
+        """
+        Extract relevant information from context based on question keywords
+        
+        Args:
+            question: User's question (lowercase)
+            context: Full document context
+        
+        Returns:
+            Relevant extracted answer
+        """
+        # Define keyword mappings to sections
+        section_keywords = {
+            'benefits': ['benefit', 'insurance', '401', 'dental', 'vision', 'retirement'],
+            'leave': ['leave', 'annual leave', 'sick leave', 'maternity', 'paternity', 'vacation'],
+            'hours': ['hour', 'working hour', 'work time', '9:00', '5:00', 'schedule'],
+            'salary': ['salary', 'pay', 'payment', 'payroll', 'compensation', 'wage'],
+        }
+        
+        # Find which section the question is about
+        question_section = None
+        for section, keywords in section_keywords.items():
+            if any(keyword in question for keyword in keywords):
+                question_section = section
+                break
+        
+        if not question_section:
+            # If no specific section found, return a summary
+            lines = context.split('\n')
+            return self._create_summary_answer(question, lines[:15])
+        
+        # Extract the relevant section from context
+        lines = context.split('\n')
+        relevant_lines = []
+        in_section = False
+        
+        # Section header patterns (case-insensitive)
+        section_headers = {
+            'benefits': 'benefits:',
+            'leave': 'employee leave policy:',
+            'hours': 'working hours:',
+            'salary': 'salary information:',
+        }
+        
+        target_header = section_headers.get(question_section, '').lower()
+        
+        for line in lines:
+            line_stripped = line.strip()
+            line_lower = line_stripped.lower()
+            
+            # Check if we're starting the relevant section
+            if target_header in line_lower:
+                in_section = True
+                relevant_lines.append(line_stripped)
+                continue
+            
+            # If we're in the section, collect lines
+            if in_section:
+                # Stop if we hit another section header (line ending with : and not indented)
+                if line_stripped and line_stripped.endswith(':') and not line.startswith(' ') and not line.startswith('-'):
+                    # This is a new section, stop collecting
+                    break
+                
+                # Add the line if it has content
+                if line_stripped:
+                    relevant_lines.append(line_stripped)
+        
+        # Format the answer
+        if relevant_lines and len(relevant_lines) > 1:
+            answer_text = '\n'.join(relevant_lines)
+            return f"Based on the company policies:\n\n{answer_text}"
+        
+        # Fallback: return relevant portion of context
+        return self._create_summary_answer(question, context.split('\n'))
+    
+    def _create_summary_answer(self, question: str, lines: List[str]) -> str:
+        """Create a summary answer from context lines"""
+        # Filter to non-empty lines
+        content_lines = [line for line in lines if line.strip() and not line.strip().startswith('---')]
+        
+        # Try to find lines that contain key question words
+        question_words = set(question.lower().split())
+        relevant_lines = []
+        
+        for line in content_lines:
+            line_words = set(line.lower().split())
+            if question_words & line_words:  # If there's any overlap
+                relevant_lines.append(line)
+        
+        if relevant_lines:
+            return "Based on the company policies:\n\n" + '\n'.join(relevant_lines[:10])
+        
+        # Final fallback
+        return "Based on the company policies:\n\n" + '\n'.join(content_lines[:10])
     
     def get_collection_stats(self) -> Dict[str, Any]:
         """Get statistics about the vector store collection"""
