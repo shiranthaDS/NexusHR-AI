@@ -202,6 +202,46 @@ async def delete_all_documents(current_user: User = Depends(get_admin_user)):
     return result
 
 
+@router.delete("/{document_id}")
+async def delete_document(
+    document_id: str,
+    current_user: User = Depends(get_admin_user)
+):
+    """
+    Delete a specific document from the system
+    
+    Requires: Admin or HR Manager role
+    """
+    try:
+        # Delete from vector store
+        result = await rag_system.delete_document(document_id)
+        
+        if result["status"] == "error":
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=result["message"]
+            )
+        
+        # Delete physical file
+        file_path = os.path.join(settings.UPLOAD_DIR, document_id)
+        if os.path.exists(file_path):
+            os.remove(file_path)
+        
+        return {
+            "status": "success",
+            "message": f"Document {document_id} deleted successfully",
+            "document_id": document_id
+        }
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to delete document: {str(e)}"
+        )
+
+
 @router.get("/list")
 async def list_uploaded_documents(current_user: User = Depends(get_current_active_user)):
     """

@@ -8,7 +8,8 @@ import {
   DocumentTextIcon,
   CheckCircleIcon,
   XCircleIcon,
-  ArrowPathIcon
+  ArrowPathIcon,
+  TrashIcon
 } from '@heroicons/react/24/outline';
 
 export default function DocumentManager() {
@@ -18,6 +19,8 @@ export default function DocumentManager() {
   const [uploading, setUploading] = useState(false);
   const [uploadSuccess, setUploadSuccess] = useState(false);
   const [uploadError, setUploadError] = useState('');
+  const [deleting, setDeleting] = useState<string | null>(null);
+  const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -96,6 +99,25 @@ export default function DocumentManager() {
       hour: '2-digit',
       minute: '2-digit',
     });
+  };
+
+  const handleDeleteDocument = async (filename: string) => {
+    setDeleting(filename);
+    try {
+      await documentsAPI.delete(filename);
+      setUploadSuccess(true);
+      setTimeout(() => setUploadSuccess(false), 3000);
+      
+      // Reload documents and stats
+      await loadDocuments();
+      await loadStats();
+    } catch (error: any) {
+      setUploadError(error.response?.data?.detail || 'Delete failed');
+      setTimeout(() => setUploadError(''), 5000);
+    } finally {
+      setDeleting(null);
+      setDeleteConfirm(null);
+    }
   };
 
   return (
@@ -221,6 +243,36 @@ export default function DocumentManager() {
                           <span>{formatDate(doc.uploaded_at)}</span>
                         </div>
                       </div>
+                    </div>
+                    
+                    {/* Delete Button */}
+                    <div className="flex items-center space-x-2">
+                      {deleteConfirm === doc.filename ? (
+                        <>
+                          <button
+                            onClick={() => handleDeleteDocument(doc.filename)}
+                            disabled={deleting === doc.filename}
+                            className="px-3 py-1 text-xs font-medium text-white bg-red-600 rounded hover:bg-red-700 disabled:opacity-50"
+                          >
+                            {deleting === doc.filename ? 'Deleting...' : 'Confirm'}
+                          </button>
+                          <button
+                            onClick={() => setDeleteConfirm(null)}
+                            disabled={deleting === doc.filename}
+                            className="px-3 py-1 text-xs font-medium text-gray-700 bg-gray-100 rounded hover:bg-gray-200 disabled:opacity-50"
+                          >
+                            Cancel
+                          </button>
+                        </>
+                      ) : (
+                        <button
+                          onClick={() => setDeleteConfirm(doc.filename)}
+                          className="p-2 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
+                          title="Delete document"
+                        >
+                          <TrashIcon className="h-5 w-5" />
+                        </button>
+                      )}
                     </div>
                   </div>
                 </div>

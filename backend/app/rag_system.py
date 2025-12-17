@@ -354,6 +354,45 @@ Answer:"""
                 "message": f"Failed to get stats: {str(e)}"
             }
     
+    async def delete_document(self, filename: str) -> Dict[str, Any]:
+        """
+        Delete a specific document from the vector store
+        
+        Args:
+            filename: Name of the file to delete
+        
+        Returns:
+            Dictionary with deletion status
+        """
+        try:
+            collection = self.vectorstore._collection
+            
+            # Get all documents with this filename in metadata
+            results = collection.get(where={"source": {"$regex": f".*{filename}$"}})
+            
+            if results and results['ids']:
+                # Delete all chunks associated with this document
+                collection.delete(ids=results['ids'])
+                self.vectorstore.persist()
+                
+                return {
+                    "status": "success",
+                    "message": f"Document {filename} deleted from vector store",
+                    "chunks_deleted": len(results['ids'])
+                }
+            else:
+                return {
+                    "status": "success",
+                    "message": f"No vectors found for {filename}",
+                    "chunks_deleted": 0
+                }
+                
+        except Exception as e:
+            return {
+                "status": "error",
+                "message": f"Failed to delete document: {str(e)}"
+            }
+    
     async def delete_all_documents(self) -> Dict[str, Any]:
         """Clear all documents from the vector store"""
         try:
