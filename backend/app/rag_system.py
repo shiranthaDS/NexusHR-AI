@@ -158,30 +158,30 @@ Answer:"""
                 }
             
             # Build context from chat history
-            context = ""
+            chat_context = ""
             if chat_history:
-                context = "\n".join([
+                chat_context = "\n".join([
                     f"User: {msg['question']}\nAssistant: {msg['answer']}"
                     for msg in chat_history[-3:]  # Last 3 exchanges
                 ])
             
-            # Prepare the query
-            full_query = f"{context}\nUser: {question}" if context else question
+            # Prepare the query - use only the current question for retrieval
+            print(f"[RAG] Current question: {question}")
             
-            # Get response - using manual RAG instead of RetrievalQA due to HF API issues
-            print(f"[RAG] Querying with: {full_query[:100]}...")
-            
-            # Retrieve relevant documents
+            # Retrieve relevant documents based on CURRENT question only
             retriever = self.vectorstore.as_retriever(search_kwargs={"k": 3})
-            docs = retriever.get_relevant_documents(full_query)
+            docs = retriever.get_relevant_documents(question)
             
-            # Build context from retrieved documents
-            context = "\n\n".join([doc.page_content for doc in docs])
+            # Build document context from retrieved documents
+            doc_context = "\n\n".join([doc.page_content for doc in docs])
+            
+            # Create full query with chat history for context-aware responses
+            full_query = f"{chat_context}\nUser: {question}" if chat_context else question
             
             # Create prompt
             prompt = f"""Answer the question based on the context below.
 
-Context: {context}
+Context: {doc_context}
 
 Question: {full_query}
 
@@ -193,8 +193,8 @@ Answer:"""
                 print(f"[RAG] Answer generated: {answer[:100]}...")
             except Exception as llm_error:
                 print(f"[RAG] LLM invocation failed, using intelligent extraction: {str(llm_error)}")
-                # Intelligent extraction based on question keywords
-                answer = self._extract_relevant_answer(full_query.lower(), context)
+                # Intelligent extraction based on CURRENT question keywords only
+                answer = self._extract_relevant_answer(question.lower(), doc_context)
             
             # Extract source documents
             sources = []
