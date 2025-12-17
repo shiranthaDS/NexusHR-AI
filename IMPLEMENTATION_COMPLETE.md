@@ -310,7 +310,7 @@ Employee:   employee / employee123
 ```
 your_huggingface_token_here
 ```
-(Already configured in `.env`)
+(Configure this in your `.env` file)
 
 ---
 
