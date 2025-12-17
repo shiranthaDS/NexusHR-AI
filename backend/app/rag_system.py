@@ -43,14 +43,15 @@ class RAGSystem:
                 persist_directory=settings.CHROMA_PERSIST_DIRECTORY
             )
             
-            # Initialize LLM
+            # Initialize LLM with better parameters for concise answers
             print(f"Loading LLM: {settings.LLM_MODEL}")
             self.llm = HuggingFaceEndpoint(
                 repo_id=settings.LLM_MODEL,
                 huggingfacehub_api_token=settings.HUGGINGFACE_API_TOKEN,
                 task="text2text-generation",
-                temperature=0.7,
-                max_new_tokens=256
+                temperature=0.3,  # Lower temperature for more focused answers
+                max_new_tokens=150,  # Limit response length
+                timeout=30  # Increase timeout to 30 seconds
             )
             
             # Create retrieval chain
@@ -178,21 +179,29 @@ Answer:"""
             # Create full query with chat history for context-aware responses
             full_query = f"{chat_context}\nUser: {question}" if chat_context else question
             
-            # Create prompt
-            prompt = f"""Answer the question based on the context below.
+            # Create a focused prompt that limits the response length
+            prompt = f"""Based on the context provided, answer the question concisely and directly.
 
-Context: {doc_context}
+Context:
+{doc_context}
 
-Question: {full_query}
+Question: {question}
+
+Provide a clear, direct answer in 2-3 sentences. Only include information from the context that directly answers the question.
 
 Answer:"""
             
             # Get LLM response
             try:
                 answer = self.llm.invoke(prompt)
-                print(f"[RAG] Answer generated: {answer[:100]}...")
+                print(f"[RAG] LLM answer: {answer[:150]}...")
+                
+                # Clean up the answer if it's too verbose
+                if len(answer) > 600:
+                    print("[RAG] LLM response too long, using intelligent extraction")
+                    answer = self._extract_relevant_answer(question.lower(), doc_context)
             except Exception as llm_error:
-                print(f"[RAG] LLM invocation failed, using intelligent extraction: {str(llm_error)}")
+                print(f"[RAG] LLM invocation failed ({str(llm_error)}), using intelligent extraction")
                 # Intelligent extraction based on CURRENT question keywords only
                 answer = self._extract_relevant_answer(question.lower(), doc_context)
             
@@ -252,69 +261,75 @@ Answer:"""
         Returns:
             Relevant extracted answer
         """
-        # Define keyword mappings to sections
-        section_keywords = {
-            'benefits': ['benefit', 'insurance', '401', 'dental', 'vision', 'retirement'],
-            'leave': ['leave', 'annual leave', 'sick leave', 'maternity', 'paternity', 'vacation'],
-            'hours': ['hour', 'working hour', 'work time', '9:00', '5:00', 'schedule'],
-            'salary': ['salary', 'pay', 'payment', 'payroll', 'compensation', 'wage'],
-        }
-        
-        # Find which section the question is about
-        question_section = None
-        for section, keywords in section_keywords.items():
-            if any(keyword in question for keyword in keywords):
-                question_section = section
-                break
-        
-        if not question_section:
-            # If no specific section found, return a summary
-            lines = context.split('\n')
-            return self._create_summary_answer(question, lines[:15])
-        
-        # Extract the relevant section from context
+        # Specific question pattern matching for precise answers
         lines = context.split('\n')
-        relevant_lines = []
-        in_section = False
+        question_lower = question.lower()
         
-        # Section header patterns (case-insensitive)
-        section_headers = {
-            'benefits': 'benefits:',
-            'leave': 'employee leave policy:',
-            'hours': 'working hours:',
-            'salary': 'salary information:',
-        }
+        # Pattern 1: Direct keyword matching in lines
+        # Look for lines that contain key terms from the question
+        question_keywords = set(question_lower.split())
+        question_keywords.discard('how')
+        question_keywords.discard('many')
+        question_keywords.discard('what')
+        question_keywords.discard('when')
+        question_keywords.discard('where')
+        question_keywords.discard('is')
+        question_keywords.discard('are')
+        question_keywords.discard('the')
+        question_keywords.discard('do')
+        question_keywords.discard('does')
+        question_keywords.discard('can')
         
-        target_header = section_headers.get(question_section, '').lower()
+        # Find the most relevant lines (with highest keyword matches)
+        scored_lines = []
+        for i, line in enumerate(lines):
+            line_lower = line.lower()
+            score = sum(1 for kw in question_keywords if kw in line_lower)
+            if score > 0 and line.strip():
+                scored_lines.append((score, i, line.strip()))
         
-        for line in lines:
-            line_stripped = line.strip()
-            line_lower = line_stripped.lower()
+        # Sort by score (highest first)
+        scored_lines.sort(reverse=True, key=lambda x: x[0])
+        
+        # Get the top matching line and surrounding context
+        if scored_lines:
+            best_score, best_idx, best_line = scored_lines[0]
             
-            # Check if we're starting the relevant section
-            if target_header in line_lower:
-                in_section = True
-                relevant_lines.append(line_stripped)
-                continue
+            # Collect context around the best match (3 lines before and 5 after)
+            start_idx = max(0, best_idx - 3)
+            end_idx = min(len(lines), best_idx + 6)
             
-            # If we're in the section, collect lines
-            if in_section:
-                # Stop if we hit another section header (line ending with : and not indented)
-                if line_stripped and line_stripped.endswith(':') and not line.startswith(' ') and not line.startswith('-'):
-                    # This is a new section, stop collecting
-                    break
+            context_lines = []
+            for i in range(start_idx, end_idx):
+                line = lines[i].strip()
+                if line:
+                    context_lines.append(line)
+            
+            # Format as a concise answer
+            answer_text = '\n'.join(context_lines[:8])  # Limit to 8 lines max
+            
+            # If the answer is too long, try to find just the specific sub-section
+            if len(answer_text) > 500:
+                # Extract just the immediate answer
+                immediate_answer = []
+                found_answer = False
+                for line in context_lines:
+                    if any(kw in line.lower() for kw in question_keywords):
+                        found_answer = True
+                        immediate_answer.append(line)
+                    elif found_answer and line.startswith('•'):
+                        immediate_answer.append(line)
+                    elif found_answer and not line.startswith('•') and len(immediate_answer) > 1:
+                        break
                 
-                # Add the line if it has content
-                if line_stripped:
-                    relevant_lines.append(line_stripped)
+                if immediate_answer:
+                    answer_text = '\n'.join(immediate_answer[:5])
+            
+            return answer_text
         
-        # Format the answer
-        if relevant_lines and len(relevant_lines) > 1:
-            answer_text = '\n'.join(relevant_lines)
-            return f"Based on the company policies:\n\n{answer_text}"
-        
-        # Fallback: return relevant portion of context
-        return self._create_summary_answer(question, context.split('\n'))
+        # Fallback: return first 5 non-empty lines
+        content_lines = [line.strip() for line in lines if line.strip()][:5]
+        return '\n'.join(content_lines)
     
     def _create_summary_answer(self, question: str, lines: List[str]) -> str:
         """Create a summary answer from context lines"""
