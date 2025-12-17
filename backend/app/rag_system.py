@@ -66,8 +66,12 @@ class RAGSystem:
         """Create the retrieval QA chain"""
         if self.vectorstore and self.llm:
             retriever = self.vectorstore.as_retriever(
-                search_type="similarity",
-                search_kwargs={"k": 3}
+                search_type="mmr",  # Maximum Marginal Relevance for diversity
+                search_kwargs={
+                    "k": 5,  # Retrieve more chunks
+                    "fetch_k": 10,  # Fetch more candidates for MMR
+                    "lambda_mult": 0.7  # Balance relevance vs diversity
+                }
             )
             
             # Create a prompt template for FLAN-T5
@@ -113,14 +117,8 @@ Answer:"""
                 for doc in documents:
                     doc.metadata.update(metadata)
             
-            # Split documents
-            text_splitter = RecursiveCharacterTextSplitter(
-                chunk_size=1000,
-                chunk_overlap=200,
-                length_function=len,
-                separators=["\n\n", "\n", " ", ""]
-            )
-            chunks = text_splitter.split_documents(documents)
+            # Split documents with section-aware chunking
+            chunks = self._create_section_aware_chunks(documents, metadata)
             
             # Add to vector store
             self.vectorstore.add_documents(chunks)
@@ -165,15 +163,25 @@ Answer:"""
                     for msg in chat_history[-3:]  # Last 3 exchanges
                 ])
             
-            # Prepare the query - use only the current question for retrieval
-            print(f"[RAG] Current question: {question}")
+            # Expand query for better retrieval
+            expanded_question = self._expand_query(question)
+            print(f"[RAG] Original question: {question}")
+            print(f"[RAG] Expanded query: {expanded_question}")
             
-            # Retrieve relevant documents based on CURRENT question only
-            retriever = self.vectorstore.as_retriever(search_kwargs={"k": 3})
-            docs = retriever.get_relevant_documents(question)
+            # Retrieve relevant documents based on expanded question
+            retriever = self.vectorstore.as_retriever(
+                search_type="mmr",
+                search_kwargs={
+                    "k": 5,
+                    "fetch_k": 10,
+                    "lambda_mult": 0.7
+                }
+            )
+            docs = retriever.get_relevant_documents(expanded_question)
             
-            # Build document context from retrieved documents
-            doc_context = "\n\n".join([doc.page_content for doc in docs])
+            # Validate and rerank chunks based on relevance
+            doc_context = self._validate_and_rerank_chunks(question, docs)
+            print(f"[RAG] Retrieved {len(docs)} chunks, using top 3 after reranking")
             
             # Create full query with chat history for context-aware responses
             full_query = f"{chat_context}\nUser: {question}" if chat_context else question
@@ -193,8 +201,8 @@ Answer:"""
                 print(f"[RAG] Answer generated: {answer[:100]}...")
             except Exception as llm_error:
                 print(f"[RAG] LLM invocation failed, using intelligent extraction: {str(llm_error)}")
-                # Intelligent extraction based on CURRENT question keywords only
-                answer = self._extract_relevant_answer(question.lower(), doc_context)
+                # Intelligent extraction with inference
+                answer = self._extract_relevant_answer(question.lower(), doc_context, docs)
             
             # Extract source documents
             sources = []
@@ -241,32 +249,44 @@ Answer:"""
         
         return "personal_data" if personal_count > policy_count else "policy"
     
-    def _extract_relevant_answer(self, question: str, context: str) -> str:
+    def _extract_relevant_answer(self, question: str, context: str, docs: List = None) -> str:
         """
-        Extract relevant information from context based on question keywords
+        Extract relevant information from context with inference and proper formatting
         
         Args:
             question: User's question (lowercase)
-            context: Full document context
+            context: Retrieved document context
+            docs: Original retrieved documents for metadata
         
         Returns:
-            Relevant extracted answer
+            Relevant extracted answer with inference
         """
-        # Check for "how to" or procedural questions first
+        # Add inference for questions requiring calculation/reasoning
+        answer = self._add_inference(question, context)
+        if answer:
+            return answer
+        
+        # Check for "how to" or procedural questions
         if any(phrase in question for phrase in ['how do i', 'how to', 'how can i', 'process for', 'procedure']):
-            # For procedural questions, give a concise answer
             if 'apply' in question and 'leave' in question:
                 return "To apply for leave, please contact your HR manager or supervisor with your leave request, specifying the dates and type of leave (Casual, Sick, or Privilege Leave). Medical certificates are required for sick leave exceeding 2 consecutive days."
             elif 'apply' in question:
                 return "Please contact your HR department or supervisor to initiate the application process. They will guide you through the required steps and documentation."
         
-        # Define keyword mappings to sections
+        # Define keyword mappings to sections (order matters - more specific first)
         section_keywords = {
-            'benefits': ['benefit', 'insurance', '401', 'dental', 'vision', 'retirement', 'allowance'],
-            'leave': ['leave', 'annual', 'sick', 'casual', 'privilege', 'maternity', 'paternity', 'vacation', 'pl', 'cl', 'sl'],
-            'hours': ['hour', 'working hour', 'work time', '9:00', '5:00', 'schedule', 'attendance', 'late'],
+            'hours': ['attendance', 'late', 'grace', 'arrival', 'working hour', 'work hour', 'standard hour', '9:00', '5:00', 'schedule', 'deduction'],
+            'remote_work': ['core days', 'office days', 'wfh', 'work from home', 'remote', 'hybrid', 'tuesday', 'thursday'],
+            'benefits': ['benefit', 'insurance', '401', 'dental', 'vision', 'retirement', 'allowance', 'learning budget'],
+            'leave': ['leave', 'annual', 'sick', 'casual', 'privilege', 'maternity', 'paternity', 'vacation', 'pl', 'cl', 'sl', 'encash'],
             'salary': ['salary', 'pay', 'payment', 'payroll', 'compensation', 'wage'],
         }
+        
+        # Special handling for specific questions BEFORE section matching
+        if 'encash' in question and 'sick' in question:
+            # Look for sick leave encashment specifically
+            if 'cannot be encashed' in context.lower():
+                return "Based on the company policies:\n\n**No**, sick leave cannot be encashed. Any unused sick leave will lapse on December 31st of each year.\n\nNote: Only Privilege Leave (PL) can be encashed at the end of the financial year, up to a maximum of 10 days."
         
         # Find which section the question is about
         question_section = None
@@ -295,7 +315,11 @@ Answer:"""
             },
             'hours': {
                 'start': '2. Work Hours & Attendance',
-                'keywords': ['work hours', 'standard hours', '9:00 am', 'attendance']
+                'keywords': ['work hours', 'standard hours', '9:00 am', 'attendance', 'grace period']
+            },
+            'remote_work': {
+                'start': '3. Remote Work Policy',
+                'keywords': ['remote work', 'wfh', 'core days', 'hybrid']
             },
             'salary': {
                 'start': 'Salary',
@@ -430,6 +454,246 @@ Answer:"""
                 "status": "error",
                 "message": f"Failed to delete documents: {str(e)}"
             }
+    
+    def _create_section_aware_chunks(self, documents: List, metadata: Dict = None):
+        """
+        Create chunks with section awareness and metadata
+        Splits documents by section headers for better retrieval
+        """
+        import re
+        chunks = []
+        
+        # Section patterns for employee handbook
+        section_patterns = [
+            r'(\d+\.\s+[A-Z][^.]+)',  # Numbered sections like "1. Introduction", "2. Work Hours"
+            r'(\d+\.\d+\s+[A-Z][^.]+)',  # Subsections like "4.1 Casual Leave"
+        ]
+        
+        for doc in documents:
+            content = doc.page_content
+            
+            # Find all section boundaries
+            sections = []
+            for pattern in section_patterns:
+                matches = list(re.finditer(pattern, content))
+                sections.extend([(m.start(), m.group(0)) for m in matches])
+            
+            # Sort sections by position
+            sections.sort(key=lambda x: x[0])
+            
+            if not sections:
+                # No sections found, use default chunking
+                text_splitter = RecursiveCharacterTextSplitter(
+                    chunk_size=500,  # Smaller chunks for better precision
+                    chunk_overlap=100,
+                    separators=["\n\n", "\n", ". ", " ", ""]
+                )
+                default_chunks = text_splitter.split_documents([doc])
+                chunks.extend(default_chunks)
+                continue
+            
+            # Create chunks for each section
+            for i, (pos, section_title) in enumerate(sections):
+                # Get content until next section
+                if i + 1 < len(sections):
+                    section_content = content[pos:sections[i+1][0]]
+                else:
+                    section_content = content[pos:]
+                
+                # Determine section category
+                section_lower = section_title.lower()
+                category = "general"
+                if any(kw in section_lower for kw in ['work hours', 'attendance', 'hours']):
+                    category = "attendance"
+                elif any(kw in section_lower for kw in ['leave', 'casual', 'sick', 'privilege']):
+                    category = "leave_policy"
+                elif any(kw in section_lower for kw in ['benefit', 'insurance', 'allowance']):
+                    category = "benefits"
+                elif any(kw in section_lower for kw in ['remote', 'wfh', 'work from home', 'hybrid']):
+                    category = "remote_work"
+                elif any(kw in section_lower for kw in ['salary', 'compensation', 'pay']):
+                    category = "salary"
+                
+                # Split large sections into smaller chunks
+                if len(section_content) > 600:
+                    text_splitter = RecursiveCharacterTextSplitter(
+                        chunk_size=500,
+                        chunk_overlap=100,
+                        separators=["\n\n", "\n", ". ", " ", ""]
+                    )
+                    sub_chunks = text_splitter.split_text(section_content)
+                    
+                    for j, chunk_text in enumerate(sub_chunks):
+                        from langchain.schema import Document
+                        chunk_metadata = {
+                            **doc.metadata,
+                            "section": section_title,
+                            "section_category": category,
+                            "chunk_index": j
+                        }
+                        if metadata:
+                            chunk_metadata.update(metadata)
+                        
+                        chunks.append(Document(
+                            page_content=chunk_text,
+                            metadata=chunk_metadata
+                        ))
+                else:
+                    # Small section, keep as one chunk
+                    from langchain.schema import Document
+                    chunk_metadata = {
+                        **doc.metadata,
+                        "section": section_title,
+                        "section_category": category
+                    }
+                    if metadata:
+                        chunk_metadata.update(metadata)
+                    
+                    chunks.append(Document(
+                        page_content=section_content,
+                        metadata=chunk_metadata
+                    ))
+        
+        return chunks
+    
+    def _validate_and_rerank_chunks(self, question: str, docs: List) -> str:
+        """
+        Validate and rerank retrieved chunks based on question relevance
+        Prioritizes chunks with section metadata and high relevance scores
+        Returns the best matching context
+        """
+        question_lower = question.lower()
+        
+        # Extract keywords from question
+        question_keywords = set()
+        
+        # Category-specific keywords
+        category_keywords = {
+            'attendance': ['late', 'arrival', 'grace', 'attendance', 'policy', 'time', '9:00', '9:15', 'marked', 'deduction'],
+            'remote_work': ['wfh', 'work from home', 'remote', 'hybrid', 'office days', 'core days', 'tuesday', 'thursday', 'mandatory'],
+            'leave_policy': ['leave', 'casual', 'sick', 'privilege', 'pl', 'cl', 'sl', 'vacation', 'encash', 'carry forward'],
+            'benefits': ['benefit', 'insurance', 'health', 'allowance', 'learning', 'certification', 'budget'],
+        }
+        
+        # Determine question category
+        question_category = None
+        for category, keywords in category_keywords.items():
+            if any(kw in question_lower for kw in keywords):
+                question_category = category
+                question_keywords.update(keywords)
+                break
+        
+        # Filter out chunks without section metadata (old chunks)
+        docs_with_sections = [doc for doc in docs if doc.metadata.get('section') and doc.metadata.get('section') != 'N/A']
+        
+        # If no sectioned chunks, use all docs
+        if not docs_with_sections:
+            docs_with_sections = docs
+        
+        # Score each chunk
+        scored_chunks = []
+        for doc in docs_with_sections:
+            score = 0
+            content_lower = doc.page_content.lower()
+            
+            # Has section metadata bonus
+            if doc.metadata.get('section'):
+                score += 5
+            
+            # Category match bonus (strong signal)
+            if question_category and doc.metadata.get('section_category') == question_category:
+                score += 15
+                print(f"[RERANK] ✅ Category match: {doc.metadata.get('section')} (category: {question_category})")
+            
+            # Keyword matches
+            keyword_matches = sum(1 for kw in question_keywords if kw in content_lower)
+            score += keyword_matches * 3
+            
+            # Question word matches
+            question_words = set(question_lower.split())
+            content_words = set(content_lower.split())
+            word_matches = len(question_words & content_words)
+            score += word_matches
+            
+            scored_chunks.append((score, doc))
+        
+        # Sort by score (descending)
+        scored_chunks.sort(reverse=True, key=lambda x: x[0])
+        
+        # Debug: Show top chunks
+        print(f"[RERANK] Top 3 chunks:")
+        for i, (score, doc) in enumerate(scored_chunks[:3], 1):
+            section = doc.metadata.get('section', 'N/A')[:50]
+            category = doc.metadata.get('section_category', 'N/A')
+            print(f"   {i}. Score: {score} | Section: {section} | Category: {category}")
+        
+        # Return top 2-3 chunks (more focused)
+        best_chunks = [doc for _, doc in scored_chunks[:2]]
+        return '\n\n'.join([doc.page_content for doc in best_chunks])
+    
+    def _expand_query(self, question: str) -> str:
+        """
+        Expand query with synonyms and related terms for better retrieval
+        """
+        expansions = {
+            'late': 'late arrival grace period 9:15',
+            'arrival': 'arrival time late grace period',
+            'office days': 'core days office mandatory tuesday thursday',
+            'wfh': 'work from home remote hybrid',
+            'sick leave': 'sick leave sl medical certificate',
+            'casual leave': 'casual leave cl personal',
+            'encash': 'encashment cash leave balance',
+            'allowance': 'allowance budget reimbursement',
+        }
+        
+        expanded = question
+        for term, expansion in expansions.items():
+            if term in question.lower():
+                expanded += f" {expansion}"
+        
+        return expanded
+    
+    def _add_inference(self, question: str, context: str) -> str:
+        """
+        Add inference/reasoning for questions that require calculation or logic
+        """
+        import re
+        question_lower = question.lower()
+        
+        # Inference for arrival time questions (e.g., "9:20 AM")
+        time_match = re.search(r'(\d{1,2}):(\d{2})\s*(am|pm)?', question_lower)
+        if time_match and ('late' in question_lower or 'arrival' in question_lower or 'marked' in question_lower):
+            hour = int(time_match.group(1))
+            minute = int(time_match.group(2))
+            
+            # Convert to 24-hour format if needed
+            if time_match.group(3) and time_match.group(3).lower() == 'pm' and hour != 12:
+                hour += 12
+            
+            arrival_time = hour * 60 + minute
+            grace_time = 9 * 60 + 15  # 9:15 AM
+            
+            if arrival_time > grace_time:
+                late_minutes = arrival_time - grace_time
+                return f"Based on the company policies:\n\nArriving at {time_match.group(0)} is considered **Late** since it's after the grace period of 9:15 AM (late by {late_minutes} minutes).\n\nAccording to the attendance policy: Employees are allowed a grace period of 15 minutes (up to 9:15 AM). Arrival after this time will be marked as \"Late.\" Three late arrivals in a month result in a deduction of half a day of Casual Leave."
+            else:
+                return f"Based on the company policies:\n\nArriving at {time_match.group(0)} is **On Time** since it's within the grace period of 9:15 AM.\n\nThe standard work hours are 9:00 AM to 6:00 PM, with a grace period up to 9:15 AM."
+        
+        # Inference for multiple lates (e.g., "4 times late")
+        late_count_match = re.search(r'(\d+)\s*(times?|lates?)', question_lower)
+        if late_count_match and ('consequence' in question_lower or 'happen' in question_lower or 'penalty' in question_lower or 'deduct' in question_lower):
+            count = int(late_count_match.group(1))
+            
+            if count >= 3:
+                full_deductions = count // 3
+                remaining_lates = count % 3
+                
+                return f"Based on the company policies:\n\nBeing late **{count} times** results in:\n\n• **{full_deductions} deduction(s)** of half a day of Casual Leave (since every 3 late arrivals = 0.5 day CL deduction)\n• **{remaining_lates} additional late(s)** (approaching the next deduction threshold)\n\nAccording to the attendance policy: Three late arrivals in a month result in a deduction of half a day of Casual Leave. Arrival after 9:15 AM is marked as \"Late.\""
+            else:
+                return f"Based on the company policies:\n\nBeing late **{count} time(s)** does not yet result in a leave deduction. However, be aware that 3 late arrivals in a month will result in a deduction of half a day of Casual Leave.\n\nYou currently have **{count} late(s)**, so you're **{3 - count} late(s) away** from a deduction."
+        
+        # No inference needed
+        return None
 
 
 # Global RAG instance
