@@ -6,7 +6,7 @@
 
 production-oriented HR assistant that uses Retrieval-Augmented Generation (RAG) to answer policy questions from uploaded documents (PDFs).
 
-### Backend (FastAPI + RAG)
+### Backend (FastAPI)
 - ✅ JWT Authentication with role-based access control
 - ✅ RAG System with ChromaDB vector store
 - ✅ Document Processing (PDF upload and parsing)
