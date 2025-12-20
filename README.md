@@ -3,21 +3,31 @@
 
 ![Python](https://img.shields.io/badge/Python-3.9%2B-3776AB?logo=python&logoColor=white) ![FastAPI](https://img.shields.io/badge/FastAPI-✓-009688) ![Next.js](https://img.shields.io/badge/Next.js-13-000000?logo=next.js&logoColor=white) ![LangChain](https://img.shields.io/badge/LangChain-0.1-4B5563?logo=langchain&logoColor=white) ![ChromaDB](https://img.shields.io/badge/ChromaDB-persist-4C1) ![HuggingFace](https://img.shields.io/badge/HuggingFace-Models-FF6A00?logo=huggingface&logoColor=white)
 
-Modern, production-oriented HR assistant that uses Retrieval-Augmented Generation (RAG) to answer policy questions from uploaded documents (PDFs).
 
-Why this is recruiter-friendly
+production-oriented HR assistant that uses Retrieval-Augmented Generation (RAG) to answer policy questions from uploaded documents (PDFs).
 
-- Role: Full-stack product combining backend, frontend, and ML infra
-- Impact: faster employee support, searchable policy knowledgebase, secure access controls
-- Key skills demonstrated: Python, FastAPI, LangChain, vector search (Chroma), transformer-based embeddings, Next.js, TypeScript
+### Backend (FastAPI + RAG)
+- ✅ JWT Authentication with role-based access control
+- ✅ RAG System with ChromaDB vector store
+- ✅ Document Processing (PDF upload and parsing)
+- ✅ Hugging Face Integration (embeddings + LLM)
+- ✅ LangChain – RAG orchestration and retrieval pipeline
 
-Core features
+### Frontend (Next.js 16)
+- ✅ Modern UI with Tailwind CSS
+- ✅ Real-time Chat Interface
+- ✅ Document Management
 
-- Secure authentication & role-based access (admin, hr_manager, employee)
-- Document ingestion & intelligent chunking (PDF -> metadata + vectors)
-- Vector search with ChromaDB + embeddings
-- RAG-powered Q&A with intent classification and reranking
-- Web UI: chat interface + document manager (upload / delete)
+
+Why this project
+- Provide employees and HR teams with an intelligent assistant that answers policy questions using company documents (PDFs), and supports secure role-based access.
+
+Features
+- Secure authentication and role-based access (admin, hr_manager, employee)
+- Document ingestion (PDF) with intelligent chunking and metadata
+- Vector search with ChromaDB + sentence-transformers embeddings
+- RAG-powered Q&A with context-aware retrieval and intent classification
+- Web UI for chat and document management (Next.js + TypeScript)
 
 Quick start (local)
 
@@ -47,32 +57,18 @@ npm install
 npm run dev
 ```
 
-API docs
+## 🔐 Demo Accounts
+- Admin: `hr_admin` / `admin123`
+- Manager: `hr_manager` / `manager123`
+- Employee: `employee` / `employee123`
 
-- Swagger UI: http://localhost:8000/api/docs
+## 📚 API Documentation
+- Swagger: http://localhost:8000/api/docs
 - ReDoc: http://localhost:8000/api/redoc
 
-High-level repo layout
-
-- `backend/` — FastAPI app, RAG system, document ingestion scripts
-- `frontend/` — Next.js app, chat UI, document manager
-- `chroma_db/` — persisted Chroma DB
-- `uploads/` — uploaded PDF files
-
-For recruiters / hiring managers
-
-- Suggested interview topics: architecture of a RAG system, vector DB tradeoffs, chunking strategies, evaluation of retrieved context, LLM prompt design, access control and secure file handling
-- Time-to-demo: ~10 minutes (start backend + frontend and upload a sample PDF)
-
-Assets
-
-- Add `docs/screenshot.png` to show the chat UI (placeholder used above).
-
-Next steps I can do for you
-
-- Add CI badges and a GitHub Actions workflow
-- Add `LICENSE` (MIT/Apache) and `CONTRIBUTING.md`
-- Create a short one-page demo script for interviews
+## 🛠️ Tech Stack
+- **Backend**: FastAPI, LangChain, ChromaDB, Hugging Face
+- **Frontend**: Next.js 16, TypeScript, Tailwind CSS
+- **ML**: sentence-transformers, google/flan-t5-large
 
 ---
-
