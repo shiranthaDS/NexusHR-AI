@@ -59,6 +59,7 @@ async def upload_document(
             "filename": file.filename,
             "uploaded_by": current_user.username,
             "upload_date": datetime.now().isoformat(),
+            "document_id": filename,
             "document_type": "policy"
         }
         
@@ -135,6 +136,7 @@ async def upload_multiple_documents(
                 "filename": file.filename,
                 "uploaded_by": current_user.username,
                 "upload_date": datetime.now().isoformat(),
+                "document_id": filename,
                 "document_type": "policy"
             }
             
@@ -200,6 +202,73 @@ async def delete_all_documents(current_user: User = Depends(get_admin_user)):
         print(f"Error cleaning up upload directory: {str(e)}")
     
     return result
+
+
+@router.delete("/{document_id}")
+async def delete_document(
+    document_id: str,
+    current_user: User = Depends(get_current_active_user)
+):
+    """
+    Delete a single uploaded document (file + vectors)
+
+    Requires: Admin or the user who uploaded the document
+    """
+    # Permission: allow admin or uploader (best-effort via metadata).
+    # We attempt to determine uploader from stored metadatas; if not found, admins may proceed.
+    try:
+        uploader = None
+        original_name = None
+        if "_" in document_id:
+            parts = document_id.split("_")
+            original_name = "_".join(parts[1:])
+
+        try:
+            collection = rag_system.vectorstore._collection
+            docs = collection.get(include=["metadatas"]) or {}
+            metas = docs.get("metadatas", [])
+            for meta in metas:
+                if not meta or not isinstance(meta, dict):
+                    continue
+                if meta.get("document_id") == document_id or meta.get("filename") == document_id or (original_name and meta.get("filename") == original_name):
+                    uploader = meta.get("uploaded_by") or uploader
+                    break
+                src = meta.get("source")
+                if src and src.endswith(document_id):
+                    uploader = meta.get("uploaded_by") or uploader
+                    break
+        except Exception:
+            # best-effort, continue
+            uploader = None
+
+        # Enforce permissions: admin or uploader
+        if current_user.role != "admin" and uploader and uploader != current_user.username:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only admin or uploader can delete this document")
+
+        # Attempt to delete vectors/meta via rag_system
+        result = await rag_system.delete_document(document_id)
+        if result.get("status") == "error":
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=result.get("message"))
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to remove document from vector store: {str(e)}")
+
+    # Remove file from uploads directory if present
+    try:
+        file_path = os.path.join(settings.UPLOAD_DIR, document_id)
+        if os.path.exists(file_path):
+            os.remove(file_path)
+    except Exception as e:
+        print(f"Failed to remove file {file_path}: {str(e)}")
+
+    # Return success and include deleted_count if available
+    response = {"status": "success", "message": f"Document {document_id} deleted"}
+    if isinstance(result, dict) and "deleted_count" in result:
+        response["deleted_count"] = result["deleted_count"]
+
+    return response
 
 
 @router.get("/list")

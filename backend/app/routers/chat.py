@@ -40,17 +40,14 @@ async def query_hr_system(
                 detail=result["message"]
             )
         
-        # Generate follow-up suggestions
-        suggestions = generate_suggestions(request.question, intent)
-        
-        # Prepare response
+        # Do not include sources or follow-up suggestions in responses
         response = QueryResponse(
             status="success",
             answer=result["answer"],
-            sources=result["sources"] if request.include_sources else None,
+            sources=None,
             question=result["question"],
             intent=intent,
-            suggestions=suggestions
+            suggestions=None
         )
         
         return response
@@ -97,14 +94,14 @@ async def get_suggestions(
     
     Requires: Authentication
     """
+    # Suggestions feature disabled — return empty suggestions to callers
     intent = await rag_system.classify_intent(question)
-    suggestions = generate_suggestions(question, intent)
-    
+
     return {
         "status": "success",
         "original_question": question,
         "intent": intent,
-        "suggestions": suggestions
+        "suggestions": None
     }
 
 

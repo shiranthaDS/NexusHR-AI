@@ -62,6 +62,11 @@ export const documentsAPI = {
     const response = await api.get('/api/documents/stats');
     return response.data;
   },
+  
+  delete: async (documentId: string) => {
+    const response = await api.delete(`/api/documents/${encodeURIComponent(documentId)}`);
+    return response.data;
+  },
 };
 
 // Chat API

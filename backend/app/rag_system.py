@@ -454,6 +454,102 @@ Answer:"""
                 "status": "error",
                 "message": f"Failed to delete documents: {str(e)}"
             }
+
+    async def delete_document(self, document_id: str) -> Dict[str, Any]:
+        """Delete a single document from the vector store by its document_id metadata"""
+        try:
+            collection = self.vectorstore._collection
+
+            # Collect candidate ids to delete by scanning metadatas for multiple possible keys
+            ids_to_delete = set()
+            deleted_count = 0
+
+            try:
+                all_docs = collection.get(include=["ids", "metadatas"]) or {}
+                all_ids = all_docs.get("ids", [])
+                all_metas = all_docs.get("metadatas", [])
+
+                # Compute possible original filename (strip leading timestamp_)
+                original_name = None
+                if "_" in document_id:
+                    parts = document_id.split("_")
+                    original_name = "_".join(parts[1:])
+
+                # Also consider source path patterns
+                upload_path = os.path.join(settings.UPLOAD_DIR, document_id)
+                upload_path_alt = f"./{os.path.join(settings.UPLOAD_DIR, document_id)}"
+
+                for idx, meta in enumerate(all_metas):
+                    if not meta:
+                        continue
+                    try:
+                        if isinstance(meta, dict):
+                            # exact document_id match in metadata
+                            if meta.get("document_id") == document_id:
+                                ids_to_delete.add(all_ids[idx])
+                                continue
+
+                            # filename matches either the stored filename or original
+                            fname = meta.get("filename")
+                            if fname and (fname == document_id or (original_name and fname == original_name)):
+                                ids_to_delete.add(all_ids[idx])
+                                continue
+
+                            # source path match
+                            src = meta.get("source")
+                            if src and (src.endswith(document_id) or src == upload_path or src == upload_path_alt):
+                                ids_to_delete.add(all_ids[idx])
+                                continue
+
+                            # Any metadata value equals the document id or original name
+                            if any(str(v) == document_id or (original_name and str(v) == original_name) for v in meta.values()):
+                                ids_to_delete.add(all_ids[idx])
+                                continue
+                    except Exception:
+                        continue
+            except Exception:
+                # If get fails, try where-based deletions below
+                all_ids = []
+
+            # If no ids found via scan, attempt where-based deletes (Chroma may support this)
+            try:
+                if ids_to_delete:
+                    collection.delete(ids=list(ids_to_delete))
+                    deleted_count = len(ids_to_delete)
+                else:
+                    # Try deleting via metadata fields
+                    tried_any = False
+                    try:
+                        res = collection.delete(where={"document_id": document_id})
+                        tried_any = True
+                    except Exception:
+                        res = None
+                    if not tried_any and original_name:
+                        try:
+                            res = collection.delete(where={"filename": original_name})
+                        except Exception:
+                            res = None
+                    # Some versions return None; best-effort: count by re-query
+                    try:
+                        remaining = collection.get(include=["metadatas"]) or {}
+                        deleted_count = -1 if res is None else 0
+                    except Exception:
+                        pass
+
+            except Exception as e:
+                return {"status": "error", "message": f"Failed to delete vectors: {str(e)}"}
+
+            # Persist changes if supported
+            try:
+                # Newer Chromadb persists automatically; keep call but ignore failures
+                self.vectorstore.persist()
+            except Exception:
+                pass
+
+            return {"status": "success", "message": f"Document {document_id} deleted from vector store", "deleted_count": deleted_count}
+
+        except Exception as e:
+            return {"status": "error", "message": f"Failed to delete document: {str(e)}"}
     
     def _create_section_aware_chunks(self, documents: List, metadata: Dict = None):
         """

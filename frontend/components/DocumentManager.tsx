@@ -80,6 +80,23 @@ export default function DocumentManager() {
     }
   };
 
+  const handleDelete = async (documentId: string) => {
+    const ok = confirm('Are you sure you want to delete this document? This will remove the file and its vectors.');
+    if (!ok) return;
+
+    setLoading(true);
+    try {
+      await documentsAPI.delete(documentId);
+      await loadDocuments();
+      await loadStats();
+    } catch (error) {
+      console.error('Failed to delete document:', error);
+      alert('Failed to delete document');
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const formatBytes = (bytes: number) => {
     if (bytes === 0) return '0 Bytes';
     const k = 1024;
@@ -221,6 +238,15 @@ export default function DocumentManager() {
                           <span>{formatDate(doc.uploaded_at)}</span>
                         </div>
                       </div>
+                    </div>
+                    <div className="ml-4 flex-shrink-0">
+                      <button
+                        onClick={() => handleDelete(doc.filename)}
+                        className="text-sm text-red-600 hover:underline"
+                        aria-label={`Delete ${doc.filename}`}
+                      >
+                        Delete
+                      </button>
                     </div>
                   </div>
                 </div>
